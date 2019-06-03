@@ -86,8 +86,7 @@ bool Server::ProcessPacket(Socket::Packet& aPacket) noexcept
     }
     else if (pConnection->IsConnected())
     {
-        // OnPacketReceived
-        return true;
+        return OnPacketReceived(Buffer::Reader(&aPacket.Payload));
     }
 
     return false;

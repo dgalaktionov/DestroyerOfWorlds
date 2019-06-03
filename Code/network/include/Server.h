@@ -18,7 +18,10 @@ public:
     bool Send(const Endpoint& acRemoteEndpoint, Buffer aBuffer) noexcept override;
 
 protected:
-
+    bool OnPacketReceived(const Buffer::Reader &acBufferReader) noexcept
+    {
+        return true;
+    };
     bool ProcessPacket(Socket::Packet& aPacket) noexcept;
 
 private:
