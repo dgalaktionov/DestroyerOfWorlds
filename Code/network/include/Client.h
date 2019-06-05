@@ -25,7 +25,6 @@ public:
     uint32_t Update(const uint64_t aElapsedMilliSeconds) noexcept
     {
         uint32_t processedPackets = 0;
-        m_connection.Update(aElapsedMilliSeconds);
         Outcome<Socket::Packet, Socket::Error> result = m_socket.Receive();
 
         while (!result.HasError())
@@ -37,6 +36,8 @@ public:
             result = m_socket.Receive();
         }
 
+        m_connection.Update(aElapsedMilliSeconds);
+
         // TODO error handling
         return processedPackets;
     }
@@ -44,19 +45,29 @@ public:
 protected:
     bool ProcessPacket(Socket::Packet& aPacket) noexcept
     {
+        Buffer::Reader reader(&aPacket.Payload);
+
         if (m_connection.IsNegotiating())
         {
-            if (m_connection.ProcessNegociation(&aPacket.Payload))
+            if (m_connection.ProcessPacket(reader))
             {
-                // OnConnected
+                if (m_connection.IsConnected())
+                {
+                    // OnClientConnected
+                }
+
                 return true;
             }
 
             return false;
         }
-        else if (m_connection.IsConnected() && m_connection.ProcessPacket(&aPacket.Payload))
+        else if (m_connection.IsConnected())
         {
-            return OnPacketReceived(Buffer::Reader(&aPacket.Payload));
+            if (m_connection.ProcessPacket(reader))
+            {
+                // FIXME check that it's the payload type...
+                return OnPacketReceived(reader);
+            }
         }
 
         return false;

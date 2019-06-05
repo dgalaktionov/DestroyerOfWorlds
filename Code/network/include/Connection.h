@@ -16,6 +16,7 @@ public:
         {
             kNegotiation,
             kConnection,
+            kPayload,
             kCount
         };
 
@@ -55,9 +56,7 @@ public:
     Connection& operator=(Connection&& aRhs) noexcept;
     Connection& operator=(const Connection& aRhs) = delete;
 
-    bool ProcessPacket(Buffer* apBuffer);
-    bool ProcessNegociation(Buffer* apBuffer);
-
+    bool ProcessPacket(Buffer::Reader & aReader);
     bool IsNegotiating() const;
     bool IsConnected() const;
 
@@ -68,20 +67,25 @@ public:
 
 protected:
 
+    bool ProcessNegociation(Buffer::Reader & aReader);
+    bool ProcessConfirmation(Buffer::Reader & aReader);
+
     void SendNegotiation();
+    void SendConfirmation();
+
+    bool WriteChallenge(Buffer::Writer& aWriter);
+    bool ReadChallenge(Buffer::Reader& aReader, uint32_t &aCode);
 
     Outcome<Header, HeaderErrors> ProcessHeader(Buffer::Reader& aReader);
+    void WriteHeader(Buffer::Writer & aWriter, const uint64_t acHeaderType);
 
 private:
-
-    bool WriteAuthCode(Buffer::Writer& aWriter);
-    bool ReadAuthCode(Buffer::Reader& aReader, uint32_t &aCode);
 
     ICommunication& m_communication;
     State m_state;
     uint64_t m_timeSinceLastEvent;
     Endpoint m_remoteEndpoint;
     DHChachaFilter m_filter;
-    bool m_needsAuthentication;
-    uint32_t m_authCode;
+    bool m_isServer;
+    uint32_t m_challengeCode;
 };
