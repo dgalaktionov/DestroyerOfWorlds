@@ -1,7 +1,7 @@
 #include "Connection.h"
 #include "StackAllocator.h"
 
-
+#include "osrng.h"
 
 struct NullCommunicationInterface : public Connection::ICommunication
 {
@@ -24,16 +24,10 @@ Connection::Connection(ICommunication& aCommunicationInterface, const Endpoint& 
     , m_timeSinceLastEvent{0}
     , m_remoteEndpoint{acRemoteEndpoint}
     , m_isServer{acIsServer}
+    , m_remoteCode{ 0 }
 {
-    if (acIsServer)
-    {
-        // TODO secure random
-        m_challengeCode = 24;
-    }
-    else
-    {
-        m_challengeCode = 0;
-    }
+    CryptoPP::AutoSeededRandomPool rng;
+    m_challengeCode = rng.GenerateWord32();
 
 }
 
@@ -44,11 +38,13 @@ Connection::Connection(Connection&& aRhs) noexcept
     , m_remoteEndpoint{std::move(aRhs.m_remoteEndpoint)}
     , m_isServer{aRhs.m_isServer}
     , m_challengeCode{aRhs.m_challengeCode}
+    , m_remoteCode{aRhs.m_remoteCode}
 {
     aRhs.m_communication = s_dummyInterface;
     aRhs.m_state = kNone;
     aRhs.m_timeSinceLastEvent = 0;
     aRhs.m_challengeCode = 0;
+    aRhs.m_remoteCode = 0;
 }
 
 Connection::~Connection()
@@ -63,11 +59,13 @@ Connection& Connection::operator=(Connection&& aRhs) noexcept
     m_remoteEndpoint = std::move(aRhs.m_remoteEndpoint);
     m_isServer = aRhs.m_isServer;
     m_challengeCode = aRhs.m_challengeCode;
+    m_remoteCode = aRhs.m_remoteCode;
 
     aRhs.m_communication = s_dummyInterface;
     aRhs.m_state = kNone;
     aRhs.m_timeSinceLastEvent = 0;
     aRhs.m_challengeCode = 0;
+    aRhs.m_remoteCode = 0;
 
     return *this;
 }
@@ -111,12 +109,17 @@ Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessNegociation(Buffe
         {
             return kPayloadRequired;
         }
+
+        if (!ReadChallenge(aReader, m_remoteCode))
+        {
+            return kBadChallenge;
+        }
     }
-    else if (ReadChallenge(aReader, m_challengeCode))
+    else if (ReadChallenge(aReader, m_remoteCode))
     {
         // We (client) assume to be connected and send back the challenge code
         m_state = kConnected;
-        SendConfirmation();
+        SendConfirmation(m_challengeCode ^ m_remoteCode);
     }
 
     return Header::kNegotiation;
@@ -124,13 +127,12 @@ Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessNegociation(Buffe
 
 Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessConfirmation(Buffer::Reader& aReader)
 {
-    // We are a server that needs to challenge clients
-    uint32_t otherCode = 0;
+    // We are a server that needs to check clients' challenge
+    uint32_t confirmationCode = 0;
 
-    if (ReadChallenge(aReader, otherCode))
+    if (ReadChallenge(aReader, confirmationCode))
     {
-        // FIXME is not secure for symmetric crypto, only for testing
-        if (otherCode == m_challengeCode)
+        if (confirmationCode == (m_challengeCode ^ m_remoteCode))
         {
             // We got a correct challenge code back
             m_state = kConnected;
@@ -217,22 +219,21 @@ void Connection::SendNegotiation()
 
     m_filter.PreConnect(&writer);
 
-    if (m_isServer)
-        WriteChallenge(writer);
+    WriteChallenge(writer, m_challengeCode);
 
     m_communication.Send(m_remoteEndpoint, *pBuffer);
 
     allocator.Delete(pBuffer);
 }
 
-void Connection::SendConfirmation()
+void Connection::SendConfirmation(const uint32_t acCode)
 {
     StackAllocator<1 << 13> allocator;
     auto* pBuffer = allocator.New<Buffer>(1200);
 
     Buffer::Writer writer(pBuffer);
     WriteHeader(writer, Header::kConnection);
-    WriteChallenge(writer);
+    WriteChallenge(writer, acCode);
 
     m_communication.Send(m_remoteEndpoint, *pBuffer);
 
@@ -266,12 +267,19 @@ Outcome<Connection::Header, Connection::HeaderErrors> Connection::ProcessHeader(
     return header;
 }
 
-bool Connection::WriteChallenge(Buffer::Writer &aWriter)
+bool Connection::WriteChallenge(Buffer::Writer &aWriter, uint32_t aCode)
 {
-    return aWriter.WriteBytes((uint8_t *) &m_challengeCode, sizeof(m_challengeCode));
+    m_filter.PostSend((uint8_t *) &aCode, sizeof(m_challengeCode), 0);
+    return aWriter.WriteBytes((uint8_t *)&aCode, sizeof(m_challengeCode));
 }
 
 bool Connection::ReadChallenge(Buffer::Reader &aReader, uint32_t &aCode)
 {
-    return aReader.ReadBytes((uint8_t *) &aCode, sizeof(m_challengeCode));
+    if (aReader.ReadBytes((uint8_t *)&aCode, sizeof(m_challengeCode)))
+    {
+        m_filter.PreReceive((uint8_t *)&aCode, sizeof(m_challengeCode), 0);
+        return true;
+    }
+    
+    return false;
 }
