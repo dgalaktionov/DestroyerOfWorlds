@@ -54,7 +54,7 @@ protected:
 
             return false;
         }
-        else if (m_connection.IsConnected())
+        else if (m_connection.IsConnected() && m_connection.ProcessPacket(&aPacket.Payload))
         {
             return OnPacketReceived(Buffer::Reader(&aPacket.Payload));
         }

@@ -18,12 +18,22 @@ static NullCommunicationInterface s_dummyInterface;
 
 static const char* s_headerSignature = "MG";
 
-Connection::Connection(ICommunication& aCommunicationInterface, const Endpoint& acRemoteEndpoint)
+Connection::Connection(ICommunication& aCommunicationInterface, const Endpoint& acRemoteEndpoint, const bool acNeedsAuthentication)
     : m_communication{ aCommunicationInterface }
     , m_state{kNegociating}
     , m_timeSinceLastEvent{0}
     , m_remoteEndpoint{acRemoteEndpoint}
+    , m_needsAuthentication{acNeedsAuthentication}
 {
+    if (acNeedsAuthentication)
+    {
+        // TODO secure random
+        m_authCode = 24;
+    }
+    else
+    {
+        m_authCode = 0;
+    }
 
 }
 
@@ -32,10 +42,13 @@ Connection::Connection(Connection&& aRhs) noexcept
     , m_state{std::move(aRhs.m_state)}
     , m_timeSinceLastEvent{std::move(aRhs.m_timeSinceLastEvent)}
     , m_remoteEndpoint{std::move(aRhs.m_remoteEndpoint)}
+    , m_needsAuthentication{aRhs.m_needsAuthentication}
+    , m_authCode{aRhs.m_authCode}
 {
     aRhs.m_communication = s_dummyInterface;
     aRhs.m_state = kNone;
     aRhs.m_timeSinceLastEvent = 0;
+    aRhs.m_authCode = 0;
 }
 
 Connection::~Connection()
@@ -48,10 +61,13 @@ Connection& Connection::operator=(Connection&& aRhs) noexcept
     m_state = aRhs.m_state;
     m_timeSinceLastEvent = aRhs.m_timeSinceLastEvent;
     m_remoteEndpoint = std::move(aRhs.m_remoteEndpoint);
+    m_needsAuthentication = aRhs.m_needsAuthentication;
+    m_authCode = aRhs.m_authCode;
 
     aRhs.m_communication = s_dummyInterface;
     aRhs.m_state = kNone;
     aRhs.m_timeSinceLastEvent = 0;
+    aRhs.m_authCode = 0;
 
     return *this;
 }
@@ -62,9 +78,22 @@ bool Connection::ProcessPacket(Buffer* apBuffer)
     
     auto header = ProcessHeader(reader);
     if (header.HasError())
+    {
         return false;
+    }
 
-    m_timeSinceLastEvent = 0;
+    if (header.GetResult().Type == Header::kNegotiation)
+    {
+        /*
+        Even if we consider ourselves connected, the other party (probably the server) may be still waiting
+         for our confirmation...
+        */
+        return ProcessNegociation(apBuffer);
+    }
+    else
+    {
+        m_timeSinceLastEvent = 0;
+    }
 
     return true;
 }
@@ -74,11 +103,48 @@ bool Connection::ProcessNegociation(Buffer* apBuffer)
     Buffer::Reader reader(apBuffer);
 
     auto header = ProcessHeader(reader);
-    if (header.HasError())
+    if (header.HasError() || header.GetResult().Type != Header::kNegotiation)
         return false;
 
-    if (m_filter.ReceiveConnect(&reader))
+    if (!m_filter.ReceiveConnect(&reader))
+    {
+        // Drop connection if key is not accepted
+        m_state = Connection::kNone;
+        return false;
+    }
+
+    if (m_needsAuthentication)
+    {
+        // We are a server that needs to challenge clients
+        uint32_t otherCode = 0;
+
+        if (header.GetResult().Length >= sizeof(m_authCode) && ReadAuthCode(reader, otherCode))
+        {
+            if (otherCode == m_authCode)
+            {
+                // We got a correct challenge code back
+                m_state = kConnected;
+                return true;
+            }
+            else
+            {
+                // Wrong challenge code, drop connection
+                m_state = Connection::kNone;
+                return false;
+            }
+        }
+        else
+        {
+            // No challenge code received yet
+            return false;
+        }
+    }
+    else if (header.GetResult().Length >= sizeof(m_authCode) && ReadAuthCode(reader, m_authCode))
+    {
+        // We (client) assume to be connected and send back the challenge code
         m_state = kConnected;
+        SendNegotiation();
+    }
 
     return IsNegotiating() || IsConnected();
 }
@@ -137,6 +203,9 @@ void Connection::SendNegotiation()
     header.Type = Header::kNegotiation;
     header.Length = 0;
 
+    if (m_authCode > 0)
+        header.Length += sizeof(m_authCode);
+
     StackAllocator<1 << 13> allocator;
     auto* pBuffer = allocator.New<Buffer>(1200);
 
@@ -147,6 +216,9 @@ void Connection::SendNegotiation()
     writer.WriteBits(header.Length, 11);
 
     m_filter.PreConnect(&writer);
+
+    if (m_authCode > 0)
+        WriteAuthCode(writer);
 
     m_communication.Send(m_remoteEndpoint, *pBuffer);
 
@@ -178,4 +250,14 @@ Outcome<Connection::Header, Connection::HeaderErrors> Connection::ProcessHeader(
         return kTooLarge;
 
     return header;
+}
+
+bool Connection::WriteAuthCode(Buffer::Writer &aWriter)
+{
+    return aWriter.WriteBytes((uint8_t *) &m_authCode, sizeof(m_authCode));
+}
+
+bool Connection::ReadAuthCode(Buffer::Reader &aReader, uint32_t &aCode)
+{
+    return aReader.ReadBytes((uint8_t *) &aCode, sizeof(m_authCode));
 }

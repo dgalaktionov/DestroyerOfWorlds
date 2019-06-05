@@ -46,7 +46,7 @@ public:
         virtual bool Send(const Endpoint& acRemote, Buffer aBuffer) = 0;
     };
 
-    Connection(ICommunication& aCommunicationInterface, const Endpoint& acRemoteEndpoint);
+    Connection(ICommunication& aCommunicationInterface, const Endpoint& acRemoteEndpoint, const bool acNeedsAuthentication=false);
     Connection(const Connection& acRhs) = delete;
     Connection(Connection&& aRhs) noexcept;
 
@@ -74,9 +74,14 @@ protected:
 
 private:
 
+    bool WriteAuthCode(Buffer::Writer& aWriter);
+    bool ReadAuthCode(Buffer::Reader& aReader, uint32_t &aCode);
+
     ICommunication& m_communication;
     State m_state;
     uint64_t m_timeSinceLastEvent;
     Endpoint m_remoteEndpoint;
     DHChachaFilter m_filter;
+    bool m_needsAuthentication;
+    uint32_t m_authCode;
 };

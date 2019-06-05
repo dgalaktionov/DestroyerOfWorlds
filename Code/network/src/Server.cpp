@@ -58,7 +58,7 @@ bool Server::ProcessPacket(Socket::Packet& aPacket) noexcept
     {
         if (!m_connectionManager.IsFull())
         {
-            Connection connection(*this, aPacket.Remote);
+            Connection connection(*this, aPacket.Remote, true);
             m_connectionManager.Add(std::move(connection));
             pConnection = m_connectionManager.Find(aPacket.Remote);
 
@@ -84,7 +84,7 @@ bool Server::ProcessPacket(Socket::Packet& aPacket) noexcept
 
         return false;
     }
-    else if (pConnection->IsConnected())
+    else if (pConnection->IsConnected() && pConnection->ProcessPacket(&aPacket.Payload))
     {
         return OnPacketReceived(Buffer::Reader(&aPacket.Payload));
     }
