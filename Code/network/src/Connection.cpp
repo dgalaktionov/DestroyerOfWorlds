@@ -105,7 +105,7 @@ Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessNegociation(Buffe
 
     if (m_isServer)
     {
-        if (aReader.GetSize() < 1400)
+        if (aReader.GetSize() < 1200)
         {
             return kPayloadRequired;
         }
@@ -119,7 +119,7 @@ Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessNegociation(Buffe
     {
         // We (client) assume to be connected and send back the challenge code
         m_state = kConnected;
-        SendConfirmation(m_challengeCode ^ m_remoteCode);
+        SendConfirmation();
     }
 
     return Header::kNegotiation;
@@ -130,8 +130,15 @@ Outcome<uint64_t, Connection::HeaderErrors> Connection::ProcessConfirmation(Buff
     // We are a server that needs to check clients' challenge
     uint32_t confirmationCode = 0;
 
+    if (aReader.GetSize() < 1200)
+    {
+        return kPayloadRequired;
+    }
+
     if (ReadChallenge(aReader, confirmationCode))
     {
+        m_filter.PreReceive((uint8_t *)&confirmationCode, sizeof(confirmationCode), 0);
+
         if (confirmationCode == (m_challengeCode ^ m_remoteCode))
         {
             // We got a correct challenge code back
@@ -226,14 +233,17 @@ void Connection::SendNegotiation()
     allocator.Delete(pBuffer);
 }
 
-void Connection::SendConfirmation(const uint32_t acCode)
+void Connection::SendConfirmation()
 {
     StackAllocator<1 << 13> allocator;
     auto* pBuffer = allocator.New<Buffer>(1200);
 
     Buffer::Writer writer(pBuffer);
     WriteHeader(writer, Header::kConnection);
-    WriteChallenge(writer, acCode);
+
+    uint32_t codeToSend = m_challengeCode ^ m_remoteCode;
+    m_filter.PostSend((uint8_t *)&codeToSend, sizeof(codeToSend), 0);
+    WriteChallenge(writer, codeToSend);
 
     m_communication.Send(m_remoteEndpoint, *pBuffer);
 
@@ -269,17 +279,10 @@ Outcome<Connection::Header, Connection::HeaderErrors> Connection::ProcessHeader(
 
 bool Connection::WriteChallenge(Buffer::Writer &aWriter, uint32_t aCode)
 {
-    m_filter.PostSend((uint8_t *) &aCode, sizeof(m_challengeCode), 0);
     return aWriter.WriteBytes((uint8_t *)&aCode, sizeof(m_challengeCode));
 }
 
 bool Connection::ReadChallenge(Buffer::Reader &aReader, uint32_t &aCode)
 {
-    if (aReader.ReadBytes((uint8_t *)&aCode, sizeof(m_challengeCode)))
-    {
-        m_filter.PreReceive((uint8_t *)&aCode, sizeof(m_challengeCode), 0);
-        return true;
-    }
-    
-    return false;
+    return aReader.ReadBytes((uint8_t *)&aCode, sizeof(m_challengeCode));
 }

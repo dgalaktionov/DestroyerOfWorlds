@@ -75,7 +75,7 @@ protected:
     Outcome<uint64_t, Connection::HeaderErrors> ProcessConfirmation(Buffer::Reader & aReader);
 
     void SendNegotiation();
-    void SendConfirmation(const uint32_t acCode);
+    void SendConfirmation();
 
     bool WriteChallenge(Buffer::Writer& aWriter, uint32_t aCode);
     bool ReadChallenge(Buffer::Reader& aReader, uint32_t &aCode);
