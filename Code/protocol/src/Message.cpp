@@ -2,6 +2,86 @@
 
 #include <algorithm>
 
+
+Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
+{
+    if (aLhs.GetFistValidOffset() > aRhs.GetFistValidOffset())
+    {
+        std::swap(aLhs, aRhs);
+    }
+
+    auto itLhs = aLhs.m_slices.begin();
+
+    for (auto itRhs = aRhs.m_slices.cbegin(); itRhs != aRhs.m_slices.cend(); itRhs++)
+    {
+        if (!itRhs->m_empty && itRhs->m_len > 0)
+        {
+            // find the first empty space in aLhs that may contain this slice
+            while (itLhs->GetEndOffset() < itRhs->GetEndOffset() || itLhs->m_offset > itRhs->m_offset)
+                itLhs++;
+
+            // if for some reason there is an overlap error, we cannot merge these two messages
+            if (itLhs == aLhs.m_slices.end())
+                break;
+
+            if (itRhs->m_offset > itLhs->m_offset)
+            {
+                // add empty slice before
+                aLhs.m_slices.insert(itLhs, std::move(Slice(itLhs->m_offset, itRhs->m_offset - itLhs->m_offset)));
+            }
+
+            size_t endOffset = itRhs->GetEndOffset();
+
+            // insert our new slice
+            aLhs.m_slices.insert(itLhs, std::move(*itRhs));
+
+            if (endOffset < itLhs->GetEndOffset())
+            {
+                // adjust current empty space after the newly inserted element
+                itLhs->m_len = itLhs->GetEndOffset() - endOffset;
+                itLhs->m_offset = endOffset;
+            }
+            else
+            {
+                // remove current empty space
+                itLhs = aLhs.m_slices.erase(itLhs);
+            }
+        }
+    }
+
+    // Consolidation phase: we want to merge any two contiguous data slices
+    auto it = aLhs.m_slices.begin();
+
+    while (it != aLhs.m_slices.end())
+    {
+        auto next = std::next(it, 1);
+
+        if (next != aLhs.m_slices.end() && !it->m_empty && !next->m_empty)
+        {
+            Buffer buffer(it->m_len + next->m_len);
+
+            std::copy(it->m_data.GetData(), it->m_data.GetData() + it->m_len, buffer.GetWriteData());
+            std::copy(next->m_data.GetData(), next->m_data.GetData() + next->m_len, buffer.GetWriteData() + it->m_len);
+
+            next->m_offset = it->m_offset;
+            next->m_len = it->m_len + next->m_len;
+            next->m_data = std::move(buffer);
+
+            it = aLhs.m_slices.erase(it);
+        }
+        else
+        {
+            it++;
+        }
+
+    }
+
+    // The merged message is not valid anymore
+    aRhs.m_len = 0;
+
+    return aLhs;
+}
+
 Message::Message(uint32_t aSeq, uint8_t *apData, size_t aLen) noexcept
     : m_slices({std::move(Message::Slice(apData, aLen))})
     , m_len(aLen)
@@ -36,10 +116,10 @@ Message::Message(Buffer::Reader& aReader) noexcept
                 m_slices.push_front(Slice((size_t) 0, slice.m_offset));
             }
 
-            if (slice.m_offset + slice.m_len < m_len)
+            if (slice.GetEndOffset() < m_len)
             {
                 // add empty slice after
-                m_slices.push_back(Slice(slice.m_offset + slice.m_len, m_len - slice.m_offset - slice.m_len));
+                m_slices.push_back(Slice(slice.GetEndOffset(), m_len - slice.GetEndOffset()));
             }
         }
     }
@@ -81,6 +161,11 @@ Message & Message::operator=(const Message & acRhs) noexcept
     return *this;
 }
 
+Message & Message::operator+(Message& aRhs) noexcept
+{
+    return Message::Merge(*this, aRhs);
+}
+
 uint32_t Message::GetSeq() const noexcept
 {
     return m_seq;
@@ -114,10 +199,9 @@ size_t Message::Write(Buffer::Writer& aWriter, size_t aOffset) const noexcept
     if (!IsComplete())
         return 0;   // this should never happen(tm)
 
-    size_t headerBytes = sizeof(m_seq) + (2*Message::MessageLenBits + 7) / 8;
     size_t availableBytes = aWriter.GetSize() - aWriter.GetBytePosition();
 
-    if (availableBytes <= headerBytes)
+    if (availableBytes <= Message::HeaderBytes)
     {
         // Don't even try to write a slice because it won't fit
         return 0;
@@ -133,6 +217,22 @@ size_t Message::Write(Buffer::Writer& aWriter, size_t aOffset) const noexcept
     aWriter.WriteBytes(m_slices.front().m_data.GetData()+aOffset, bytesToWrite);
     
     return bytesToWrite;
+}
+
+size_t Message::GetFistValidOffset() const noexcept
+{
+    size_t offset = 0;
+
+    for (auto it = m_slices.cbegin(); it != m_slices.cend(); it++)
+    {
+        if (!it->m_empty)
+        {
+            offset = it->m_offset;
+            break;
+        }
+    }
+
+    return offset;
 }
 
 Message::Slice::Slice(size_t aOffset, size_t aLen) noexcept
@@ -197,4 +297,9 @@ Message::Slice& Message::Slice::operator=(const Slice & acRhs) noexcept
     this->m_data = acRhs.m_data;
 
     return *this;
+}
+
+size_t Message::Slice::GetEndOffset() const noexcept
+{
+    return m_offset+m_len;
 }
