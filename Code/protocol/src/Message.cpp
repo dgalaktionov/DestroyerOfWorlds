@@ -3,16 +3,16 @@
 #include <algorithm>
 
 
-Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
+Message& Message::Merge(Message& aDest, Message& aSource) noexcept
 {
-    if (aLhs.GetFistValidOffset() > aRhs.GetFistValidOffset())
+    if (aDest.m_slices.size() < aSource.m_slices.size())
     {
-        std::swap(aLhs, aRhs);
+        std::swap(aDest, aSource);
     }
 
-    auto itLhs = aLhs.m_slices.begin();
+    auto itLhs = aDest.m_slices.begin();
 
-    for (auto itRhs = aRhs.m_slices.cbegin(); itRhs != aRhs.m_slices.cend(); itRhs++)
+    for (auto itRhs = aSource.m_slices.cbegin(); itRhs != aSource.m_slices.cend(); itRhs++)
     {
         if (!itRhs->m_empty && itRhs->m_len > 0)
         {
@@ -21,19 +21,19 @@ Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
                 itLhs++;
 
             // if for some reason there is an overlap error, we cannot merge these two messages
-            if (itLhs == aLhs.m_slices.end())
+            if (itLhs == aDest.m_slices.end())
                 break;
 
             if (itRhs->m_offset > itLhs->m_offset)
             {
                 // add empty slice before
-                aLhs.m_slices.insert(itLhs, std::move(Slice(itLhs->m_offset, itRhs->m_offset - itLhs->m_offset)));
+                aDest.m_slices.insert(itLhs, std::move(Slice(itLhs->m_offset, itRhs->m_offset - itLhs->m_offset)));
             }
 
             size_t endOffset = itRhs->GetEndOffset();
 
             // insert our new slice
-            aLhs.m_slices.insert(itLhs, std::move(*itRhs));
+            aDest.m_slices.insert(itLhs, std::move(*itRhs));
 
             if (endOffset < itLhs->GetEndOffset())
             {
@@ -44,19 +44,19 @@ Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
             else
             {
                 // remove current empty space
-                itLhs = aLhs.m_slices.erase(itLhs);
+                itLhs = aDest.m_slices.erase(itLhs);
             }
         }
     }
 
     // Consolidation phase: we want to merge any two contiguous data slices
-    auto it = aLhs.m_slices.begin();
+    auto it = aDest.m_slices.begin();
 
-    while (it != aLhs.m_slices.end())
+    while (it != aDest.m_slices.end())
     {
         auto next = std::next(it, 1);
 
-        if (next != aLhs.m_slices.end() && !it->m_empty && !next->m_empty)
+        if (next != aDest.m_slices.end() && !it->m_empty && !next->m_empty)
         {
             Buffer buffer(it->m_len + next->m_len);
 
@@ -67,7 +67,7 @@ Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
             next->m_len = it->m_len + next->m_len;
             next->m_data = std::move(buffer);
 
-            it = aLhs.m_slices.erase(it);
+            it = aDest.m_slices.erase(it);
         }
         else
         {
@@ -77,9 +77,9 @@ Message& Message::Merge(Message& aLhs, Message& aRhs) noexcept
     }
 
     // The merged message is not valid anymore
-    aRhs.m_len = 0;
+    aSource.m_len = 0;
 
-    return aLhs;
+    return aDest;
 }
 
 Message::Message(uint32_t aSeq, uint8_t *apData, size_t aLen) noexcept
@@ -217,22 +217,6 @@ size_t Message::Write(Buffer::Writer& aWriter, size_t aOffset) const noexcept
     aWriter.WriteBytes(m_slices.front().m_data.GetData()+aOffset, bytesToWrite);
     
     return bytesToWrite;
-}
-
-size_t Message::GetFistValidOffset() const noexcept
-{
-    size_t offset = 0;
-
-    for (auto it = m_slices.cbegin(); it != m_slices.cend(); it++)
-    {
-        if (!it->m_empty)
-        {
-            offset = it->m_offset;
-            break;
-        }
-    }
-
-    return offset;
 }
 
 Message::Slice::Slice(size_t aOffset, size_t aLen) noexcept

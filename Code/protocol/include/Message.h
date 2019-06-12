@@ -34,8 +34,6 @@ public:
 
 private:
 
-    size_t GetFistValidOffset() const noexcept;
-
     class Slice : public AllocatorCompatible
     {
     public:
